@@ -6,27 +6,11 @@ AV 파일 정리 자동화 도구 (Windows / Python)
 
 ## 실행 방법
 
-### 파일 정리 GUI
-
 `run.bat` 을 더블클릭하거나, 터미널에서:
 
 ```
 python organizer.py
 ```
-
-### JavDB 크롤러 (배우별 품번 수집)
-
-```
-python -m crawler.javdb 배우이름
-```
-
-예시:
-```
-python -m crawler.javdb "三上悠亜"
-python -m crawler.javdb "Yua Mikami"
-```
-
-수집 결과는 `data/javdb.db` (SQLite) 에 자동 저장됩니다.
 
 ---
 
@@ -66,10 +50,24 @@ python -m crawler.javdb "Yua Mikami"
 
 ---
 
-## 필요 패키지 설치
+## 초기 설정
 
+**패키지 설치**
 ```
-pip install cloudscraper beautifulsoup4
+pip install cloudscraper beautifulsoup4 psycopg2-binary python-dotenv
+```
+
+**DB 접속 정보 설정**
+```
+cp .env.example .env
+```
+`.env` 파일을 열어 실제 접속 정보 입력:
+```
+DB_HOST=your-ec2-ip
+DB_PORT=5432
+DB_NAME=javdb
+DB_USER=your_user
+DB_PASSWORD=your_password
 ```
 
 ---
