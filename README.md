@@ -50,13 +50,6 @@ python organizer.py
 
 ---
 
-## 초기 설정
-
-**패키지 설치**
-```
-pip install cloudscraper beautifulsoup4 psycopg2-binary python-dotenv
-```
-
 
 ## 폴더 구조
 
