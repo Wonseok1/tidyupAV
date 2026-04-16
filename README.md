@@ -57,20 +57,6 @@ python organizer.py
 pip install cloudscraper beautifulsoup4 psycopg2-binary python-dotenv
 ```
 
-**DB 접속 정보 설정**
-```
-cp .env.example .env
-```
-`.env` 파일을 열어 실제 접속 정보 입력:
-```
-DB_HOST=your-ec2-ip
-DB_PORT=5432
-DB_NAME=javdb
-DB_USER=your_user
-DB_PASSWORD=your_password
-```
-
----
 
 ## 폴더 구조
 
@@ -78,11 +64,7 @@ DB_PASSWORD=your_password
 tidyupAV/
 ├── run.bat            ← GUI 실행 배치파일
 ├── organizer.py       ← 파일 정리 GUI
-├── crawler/
-│   ├── javdb.py       ← JavDB 크롤러
-│   ├── db.py          ← SQLite DB 관리
-│   └── models.py      ← 데이터 모델
 ├── data/
-│   └── javdb.db       ← 크롤링 결과 DB (자동 생성)
+│   └── javdb.db       ← 크롤링 결과 데이터 수집중
 └── wiki/              ← 프로젝트 지식베이스
 ```
