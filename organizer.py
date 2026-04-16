@@ -1,3 +1,4 @@
+import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
@@ -7,12 +8,20 @@ from pathlib import Path
 from collections import defaultdict
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env")
+
+def _app_dir() -> Path:
+    """exe(frozen) 환경에서는 exe 옆 폴더, 개발 환경에서는 소스 폴더"""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+load_dotenv(_app_dir() / ".env")
 
 
 # ── 배우-품번 매핑 로드 (DB → JSON 폴백) ─────────────────────────────────────
 
-JSON_PATH = Path(__file__).parent / "data" / "actress_map.json"
+JSON_PATH = _app_dir() / "data" / "actress_map.json"
 
 
 def _load_from_db() -> tuple[dict, str]:

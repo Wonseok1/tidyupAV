@@ -22,6 +22,12 @@ __pycache__/
 venv/
 env/
 
+# PyInstaller 빌드 결과물
+build/
+*.spec
+dist/*
+!dist/*.exe
+
 # DB & Data
 data/
 *.db
