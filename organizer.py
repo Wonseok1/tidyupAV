@@ -5,6 +5,67 @@ import re
 import shutil
 from pathlib import Path
 from collections import defaultdict
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
+
+# ── 배우-품번 매핑 로드 (DB → JSON 폴백) ─────────────────────────────────────
+
+JSON_PATH = Path(__file__).parent / "data" / "actress_map.json"
+
+
+def _load_from_db() -> tuple[dict, str]:
+    """DB에서 {품번: 배우명} 로드. 반환: (map, source_label)"""
+    import psycopg2, psycopg2.extras
+    conn = psycopg2.connect(
+        host=os.environ["DB_HOST"],
+        port=int(os.environ.get("DB_PORT", 5432)),
+        dbname=os.environ["DB_NAME"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        cursor_factory=psycopg2.extras.RealDictCursor,
+        connect_timeout=5,
+    )
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT v.code, a.name
+            FROM videos v
+            JOIN actress_videos av ON av.video_id = v.id
+            JOIN actresses a ON a.id = av.actress_id
+        """)
+        rows = cur.fetchall()
+    conn.close()
+    data = {r["code"].upper(): r["name"] for r in rows}
+    return data, f"DB ({len(set(data.values()))}명 / {len(data)}개)"
+
+
+def _load_from_json() -> tuple[dict, str]:
+    """JSON 파일에서 {품번: 배우명} 로드. 반환: (map, source_label)"""
+    import json
+    with open(JSON_PATH, encoding="utf-8") as f:
+        data = {k.upper(): v for k, v in json.load(f).items()}
+    return data, f"JSON ({len(set(data.values()))}명 / {len(data)}개)"
+
+
+def _get_actress_map() -> tuple[dict, str]:
+    """
+    DB 우선 로드, 실패 시 JSON 폴백.
+    반환: (map, source_label)  — map이 비면 빈 dict
+    """
+    # 1. DB 시도
+    try:
+        return _load_from_db()
+    except Exception:
+        pass
+
+    # 2. JSON 폴백
+    try:
+        return _load_from_json()
+    except Exception:
+        pass
+
+    return {}, ""
 
 # ── 품번 정규식 (우선순위 순)
 # 1. FC2-PPV-NNNNNNN  (영문-영문-숫자 특수 구조)
@@ -136,9 +197,12 @@ def scan_files(src_dir: str, exts: set, recursive: bool):
     return files
 
 
-def plan_moves(files: list, sort_mode: str):
+def plan_moves(files: list, sort_mode: str, actress_map: dict = None):
     """
-    sort_mode: 'title' (작품별) or 'prefix' (품번분류별)
+    sort_mode:
+      'title'   → 작품별     (ABC-001/)
+      'prefix'  → 품번분류별  (ABC/)
+      'actress' → 배우별     (배우이름/) — DB 필요
     반환: [(src_path, dest_rel_folder, code_or_none), ...]
     """
     moves = []
@@ -148,9 +212,12 @@ def plan_moves(files: list, sort_mode: str):
         if result:
             prefix, number, code = result
             if sort_mode == 'title':
-                folder = code           # ABC-001
-            else:
-                folder = prefix         # ABC
+                folder = code
+            elif sort_mode == 'prefix':
+                folder = prefix
+            else:  # actress
+                actress = (actress_map or {}).get(code.upper())
+                folder = actress if actress else f"_배우미확인/{code}"
             moves.append((f, folder, code))
         else:
             ungrouped.append((f, '_미분류', None))
@@ -203,11 +270,17 @@ class App(tk.Tk):
         ttk.Label(frm_opt, text="정렬 방식:").grid(row=0, column=0, sticky='w', padx=8, pady=6)
         self.sort_var = tk.StringVar(value='title')
         cb = ttk.Combobox(frm_opt, textvariable=self.sort_var, state='readonly', width=22,
-                          values=['title', 'prefix'])
+                          values=['title', 'prefix', 'actress'])
         cb.grid(row=0, column=1, sticky='w', padx=4, pady=6)
         cb.bind('<<ComboboxSelected>>', self._on_sort_change)
         self.sort_label = ttk.Label(frm_opt, text="작품별  →  ABC-001/", foreground='gray')
         self.sort_label.grid(row=0, column=2, sticky='w', padx=10)
+
+        # DB 상태 표시
+        self.db_status_lbl = ttk.Label(frm_opt, text="", foreground='gray')
+        self.db_status_lbl.grid(row=0, column=3, sticky='w', padx=10)
+        self._actress_map = {}
+        self._load_actress_map()
 
         # 파일 유형
         ttk.Label(frm_opt, text="파일 유형:").grid(row=1, column=0, sticky='w', padx=8, pady=4)
@@ -229,6 +302,7 @@ class App(tk.Tk):
         frm_btn.pack(fill='x', padx=10, pady=(4,0))
         ttk.Button(frm_btn, text="미리보기", command=self._preview).pack(side='left', padx=(0,6))
         ttk.Button(frm_btn, text="실행", command=self._execute).pack(side='left')
+        ttk.Button(frm_btn, text="DB 새로고침", command=self._load_actress_map).pack(side='left', padx=10)
         self.status_lbl = ttk.Label(frm_btn, text="", foreground='blue')
         self.status_lbl.pack(side='left', padx=12)
 
@@ -267,12 +341,28 @@ class App(tk.Tk):
         if d:
             self.dst_var.set(d)
 
+    def _load_actress_map(self):
+        self.db_status_lbl.config(text="데이터 로딩 중...", foreground='gray')
+        self.update_idletasks()
+        self._actress_map, source = _get_actress_map()
+        if self._actress_map:
+            self.db_status_lbl.config(text=f"✓ {source}", foreground='green')
+        else:
+            self.db_status_lbl.config(text="데이터 없음 (배우별 분류 불가)", foreground='orange')
+
     def _on_sort_change(self, *_):
         mode = self.sort_var.get()
         if mode == 'title':
             self.sort_label.config(text="작품별  →  ABC-001/")
-        else:
+        elif mode == 'prefix':
             self.sort_label.config(text="품번분류별  →  ABC/")
+        else:
+            if not self._actress_map:
+                messagebox.showwarning("DB 필요", "배우별 분류는 DB 연결이 필요합니다.\n크롤러로 먼저 데이터를 수집해주세요.")
+                self.sort_var.set('title')
+                self.sort_label.config(text="작품별  →  ABC-001/")
+            else:
+                self.sort_label.config(text="배우별  →  배우이름/")
 
     def _collect_exts(self):
         exts = set()
@@ -296,7 +386,7 @@ class App(tk.Tk):
     def _build_plan(self):
         exts = self._collect_exts()
         files = scan_files(self.src_var.get(), exts, self.chk_recursive.get())
-        moves, ungrouped = plan_moves(files, self.sort_var.get())
+        moves, ungrouped = plan_moves(files, self.sort_var.get(), self._actress_map)
         return moves, ungrouped
 
     def _preview(self):
