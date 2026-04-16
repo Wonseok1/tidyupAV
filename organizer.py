@@ -6,24 +6,123 @@ import shutil
 from pathlib import Path
 from collections import defaultdict
 
-# ── 품번 정규식: ABC-123, ABC_123, ABC123 형태 감지
-PRODUCT_CODE_RE = re.compile(r'([A-Za-z]{2,8})[-_]?(\d{2,5})', re.IGNORECASE)
+# ── 품번 정규식 (우선순위 순)
+# 1. FC2-PPV-NNNNNNN  (영문-영문-숫자 특수 구조)
+_RE_FC2       = re.compile(r'(FC2[-_]PPV)[-_](\d{5,8})', re.IGNORECASE)
+# 2. 숫자+영문 prefix: 200GANA-2789, 1pon-123456, 3dsvr-0967
+_RE_NUMPREFIX = re.compile(r'(?<!\d)(\d{1,3}[A-Za-z]{2,8})[-_](\d{2,6})', re.IGNORECASE)
+# 3. 영문+숫자 prefix: T28-557, S1-123
+_RE_LETNUM    = re.compile(r'(?<![A-Za-z0-9])([A-Za-z]{1,3}\d{1,3})[-_](\d{2,6})(?!\d)', re.IGNORECASE)
+# 4. 표준: ABC-123, ABC_123, ABC123  (숫자 6자리까지)
+_RE_STANDARD  = re.compile(r'(?<![A-Za-z0-9])([A-Za-z]{2,8})[-_]?(\d{2,6})(?!\d)', re.IGNORECASE)
 
-VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.wmv', '.mov', '.m4v', '.ts', '.rmvb', '.flv'}
-IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-SUBTITLE_EXTS = {'.srt', '.ass', '.ssa', '.vtt', '.sub'}
-ALL_EXTS = VIDEO_EXTS | IMAGE_EXTS | SUBTITLE_EXTS
+# ── 퍼지 매칭용: 품번 후보 토큰 추출
+_RE_WORD      = re.compile(r'[A-Za-z]+')
+_RE_DIGITS    = re.compile(r'\d+')
+
+# 숫자 토큰 중 품번 번호로 볼 수 없는 것들 (해상도, 연도, 일반 숫자)
+_NOISE_NUMS   = {
+    '1080', '720', '480', '360', '2160', '4096', '1920', '3840',
+    '60', '30', '24', '120', '240',
+    '2020', '2021', '2022', '2023', '2024', '2025', '2026',
+    '264', '265', '4', '8', '10', '16',
+}
+# 영문 토큰 중 품번 prefix로 볼 수 없는 것들 (화질/포맷/코덱 명칭)
+_NOISE_WORDS  = {
+    'HD', 'FHD', 'UHD', 'SDR', 'HDR', 'HDR10',
+    'AVC', 'AAC', 'HEVC', 'H264', 'H265', 'AV1',
+    'MP4', 'MKV', 'AVI', 'WMV', 'MOV', 'FLV',
+    'FPS', 'KBPS', 'MBPS',
+    'SUB', 'DUB', 'RAW', 'UNCEN', 'CENSORED',
+    'FULL', 'VER', 'VOL', 'PART', 'EP', 'CH',
+    'THE', 'AND', 'FOR',
+}
+
+
+def _normalize_num(raw: str, strip_zeros: bool = False) -> str:
+    """
+    숫자 문자열 정규화.
+    strip_zeros=False (기본): 선행 0 유지, 최소 3자리 패딩 (정규식 경로용)
+      예: '0967' → '0967',  '7' → '007'
+    strip_zeros=True: 선행 0 제거 후 최소 3자리 패딩 (퍼지 경로용)
+      예: '00707' → '707',  '0967' → '967'
+    """
+    if strip_zeros:
+        raw = raw.lstrip('0') or '0'
+    return raw.zfill(3)
+
+
+def _is_noise_num(raw: str) -> bool:
+    """해상도·연도 등 품번 번호가 아닌 숫자 판별."""
+    return raw in _NOISE_NUMS or raw.lstrip('0') in _NOISE_NUMS
+
+
+def _fuzzy_extract(stem: str):
+    """
+    prefix와 숫자가 임의 문자로 분리된 경우 퍼지 매칭.
+    예: 'midv sadfsadf 707'  →  MIDV-707
+    전략: 영문 단어 토큰과 숫자 토큰을 각각 수집 후 위치 기반 최근접 쌍 선택.
+    """
+    words = [
+        (m.group().upper(), m.start())
+        for m in _RE_WORD.finditer(stem)
+        if 2 <= len(m.group()) <= 8
+        and m.group().upper() not in _NOISE_WORDS
+    ]
+    nums = [
+        (m.group(), m.start())
+        for m in _RE_DIGITS.finditer(stem)
+        if 2 <= len(m.group()) <= 6
+        and not _is_noise_num(m.group())
+    ]
+
+    if not words or not nums:
+        return None
+
+    prefix, prefix_pos = words[0]
+    after = [(n, p) for n, p in nums if p > prefix_pos]
+    if not after:
+        return None
+
+    raw_num, _ = min(after, key=lambda x: x[1] - prefix_pos)
+    number = _normalize_num(raw_num, strip_zeros=True)
+    return prefix, number, f"{prefix}-{number}"
 
 
 def extract_product_code(filename: str):
-    """파일명에서 품번 추출. 반환: (prefix, number, full_code) or None"""
+    """
+    파일명에서 품번 추출.
+    반환: (prefix, number, full_code) or None
+
+    인식 가능 패턴:
+      MIDV-707                    → MIDV-707
+      [MIDV-707]제목...           → MIDV-707
+      (HD)PRED-571_4K             → PRED-571
+      CAWD707_fhd                 → CAWD-707
+      FC2-PPV-1234567             → FC2-PPV-1234567
+      200GANA-2789                → 200GANA-2789
+      1pon-123456                 → 1PON-123456
+      3dsvr-0967                  → 3DSVR-0967
+      SSNI_357_1080p              → SSNI-357
+      some_MIRD-220_txt           → MIRD-220
+      midv sadfsadfsdaff 707      → MIDV-707   ← 퍼지
+      MIDV blahblah 00707 1080p   → MIDV-707   ← 퍼지
+    """
     stem = Path(filename).stem
-    m = PRODUCT_CODE_RE.search(stem)
-    if m:
-        prefix = m.group(1).upper()
-        number = m.group(2).zfill(3)
-        return prefix, number, f"{prefix}-{number}"
-    return None
+
+    for pattern in (_RE_FC2, _RE_NUMPREFIX, _RE_LETNUM, _RE_STANDARD):
+        m = pattern.search(stem)
+        if m:
+            prefix = m.group(1).upper().replace('_', '-')
+            raw_num = m.group(2)
+            # 정규식으로 잡혔어도 해상도 숫자면 제외
+            if _is_noise_num(raw_num):
+                continue
+            number = _normalize_num(raw_num)
+            return prefix, number, f"{prefix}-{number}"
+
+    # 정규식 실패 시 퍼지 매칭
+    return _fuzzy_extract(stem)
 
 
 def scan_files(src_dir: str, exts: set, recursive: bool):
