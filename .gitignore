@@ -1,6 +1,11 @@
 # Claude Code
 .claude/settings.local.json
 
+# 크롤러
+crawler/
+crawler_ui.py
+run_crawler.bat
+
 # 환경변수
 .env
 .env.*
